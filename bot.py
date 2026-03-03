@@ -17,6 +17,7 @@ POLL_TIMEOUT = 30  # seconds to wait for signal-cli receive
 CLAUDE_TIMEOUT = 120  # seconds to wait for claude -p
 MAX_RESPONSE_LEN = 6000  # Signal message size limit
 SLEEP_BETWEEN_POLLS = 2  # seconds between poll cycles
+OWN_DEVICE_ID = 2  # this linked device's ID (skip sync messages from ourselves)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,8 +95,12 @@ def poll_messages():
     if result.returncode != 0:
         log.warning("signal-cli receive exited %d: %s", result.returncode, result.stderr.strip())
 
+    raw = result.stdout
+    print(f"[DEBUG poll] signal-cli stdout length={len(raw)}, stderr={result.stderr.strip()[:200]}")
+    print(f"[DEBUG poll] raw stdout (first 500 chars): {raw[:500]}")
+
     messages = []
-    for line in result.stdout.splitlines():
+    for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -103,31 +108,61 @@ def poll_messages():
             messages.append(json.loads(line))
         except json.JSONDecodeError:
             log.debug("Skipping non-JSON line: %s", line[:120])
+
+    print(f"[DEBUG poll] parsed {len(messages)} JSON envelopes")
     return messages
 
 
 def filter_group_messages(messages):
-    """Keep only data messages from the target group, ignoring our own."""
+    """Keep only data messages from the target group, ignoring our own.
+
+    Handles two envelope formats:
+    - dataMessage: messages from other group members (source != ACCOUNT)
+    - syncMessage.sentMessage: messages from the primary phone (Device 1)
+      echoed to this linked device (Device 2). These have source == ACCOUNT
+      but sourceDevice == 1, so we accept them.
+    """
+    print(f"[DEBUG filter] processing {len(messages)} envelopes")
     filtered = []
-    for envelope in messages:
+    for i, envelope in enumerate(messages):
         env = envelope.get("envelope", envelope)
         source = env.get("source") or env.get("sourceNumber", "")
-        if source == ACCOUNT:
-            continue  # ignore own messages
+        source_device = env.get("sourceDevice")
+        envelope_keys = list(env.keys())
+        print(f"[DEBUG filter] envelope {i}: source={source}, sourceDevice={source_device}, keys={envelope_keys}")
 
+        # Try dataMessage first (messages from other group members)
         data = env.get("dataMessage")
-        if not data:
-            continue
+        if data and source != ACCOUNT:
+            group_info = data.get("groupInfo", {})
+            found_group_id = group_info.get("groupId")
+            if found_group_id != GROUP_ID:
+                print(f"[DEBUG filter] envelope {i}: SKIPPED (dataMessage group mismatch: {found_group_id})")
+                continue
+            body = data.get("message") or data.get("body") or ""
+            if body.strip():
+                filtered.append({"source": source, "text": body.strip()})
+                print(f"[DEBUG filter] envelope {i}: ACCEPTED (dataMessage) body={body[:100]!r}")
+                continue
 
-        group_info = data.get("groupInfo", {})
-        if group_info.get("groupId") != GROUP_ID:
-            continue
+        # Try syncMessage.sentMessage (messages from primary phone on same account)
+        sync = env.get("syncMessage", {})
+        sent = sync.get("sentMessage")
+        if sent and source_device != OWN_DEVICE_ID:
+            group_info = sent.get("groupInfo", {})
+            found_group_id = group_info.get("groupId")
+            if found_group_id != GROUP_ID:
+                print(f"[DEBUG filter] envelope {i}: SKIPPED (syncMessage group mismatch: {found_group_id})")
+                continue
+            body = sent.get("message") or sent.get("body") or ""
+            if body.strip():
+                filtered.append({"source": source, "text": body.strip()})
+                print(f"[DEBUG filter] envelope {i}: ACCEPTED (syncMessage) body={body[:100]!r}")
+                continue
 
-        body = data.get("message") or data.get("body") or ""
-        if not body.strip():
-            continue
+        print(f"[DEBUG filter] envelope {i}: SKIPPED (no matching message)")
 
-        filtered.append({"source": source, "text": body.strip()})
+    print(f"[DEBUG filter] result: {len(filtered)} messages passed filter")
     return filtered
 
 
@@ -166,13 +201,16 @@ def ask_claude(prompt, session_id=None):
 
 def send_response(text):
     """Send a message to the Signal group."""
+    cmd = ["signal-cli", "-a", ACCOUNT, "send", "-g", GROUP_ID, "-m", text]
+    print(f"[DEBUG send] command: {cmd[:6]}... (message length={len(text)})")
     try:
         result = subprocess.run(
-            ["signal-cli", "-a", ACCOUNT, "send", "-g", GROUP_ID, "-m", text],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
         )
+        print(f"[DEBUG send] returncode={result.returncode}, stdout={result.stdout.strip()[:200]}, stderr={result.stderr.strip()[:200]}")
         if result.returncode != 0:
             log.warning("Failed to send message: %s", result.stderr.strip()[:200])
     except subprocess.TimeoutExpired:
