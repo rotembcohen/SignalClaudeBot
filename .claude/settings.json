@@ -6,8 +6,14 @@
       "Edit",
       "Glob",
       "Grep",
-      "Bash(git *)",
-      "Bash(python3 *)"
+      "Bash(git status*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(python3*)",
+      "Bash(ls*)",
+      "Bash(mkdir*)"
     ],
     "deny": [
       "Agent"
