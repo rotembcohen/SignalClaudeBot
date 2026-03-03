@@ -40,10 +40,20 @@ def load_config():
 # Session helpers (shared across bots)
 # ---------------------------------------------------------------------------
 
+def _current_project_dir():
+    """Return the Claude project directory name for the current working directory."""
+    cwd = os.getcwd()
+    return cwd.replace("/", "-")
+
+
 def list_sessions(limit=10):
-    """Scan all .jsonl session files and return the most recent sessions."""
+    """Scan .jsonl session files for the current project and return the most recent."""
     claude_projects = os.path.expanduser("~/.claude/projects")
-    session_files = glob.glob(os.path.join(claude_projects, "*/*.jsonl"))
+    project_dir = _current_project_dir()
+    project_path = os.path.join(claude_projects, project_dir)
+    if not os.path.isdir(project_path):
+        return []
+    session_files = glob.glob(os.path.join(project_path, "*.jsonl"))
 
     all_sessions = []
     for path in session_files:
@@ -109,8 +119,22 @@ def format_session_list(sessions):
 # Claude CLI
 # ---------------------------------------------------------------------------
 
+def _find_latest_session():
+    """Find the most recently modified .jsonl session file and return its session ID."""
+    claude_projects = os.path.expanduser("~/.claude/projects")
+    session_files = glob.glob(os.path.join(claude_projects, "*/*.jsonl"))
+    if not session_files:
+        return None
+    newest = max(session_files, key=os.path.getmtime)
+    return os.path.splitext(os.path.basename(newest))[0]
+
+
 async def ask_claude(prompt, session_id=None):
-    """Send prompt to claude -p and return the response text."""
+    """Send prompt to claude -p and return the response text.
+
+    Returns (response_text, session_id). If no session_id was provided,
+    detects the session created by this call so it can be resumed later.
+    """
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
@@ -128,19 +152,29 @@ async def ask_claude(prompt, session_id=None):
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT)
     except asyncio.TimeoutError:
         proc.kill()
-        return "Sorry, I took too long to respond. Please try again."
+        return "Sorry, I took too long to respond. Please try again.", session_id
     except FileNotFoundError:
         log.error("claude CLI not found — is it installed and on PATH?")
-        return "Error: Claude CLI not available."
+        return "Error: Claude CLI not available.", session_id
+
+    log.info("claude -p exited %d", proc.returncode)
+    log.info("claude -p stdout: %s", stdout.decode().strip()[:500])
+    log.info("claude -p stderr: %s", stderr.decode().strip()[:500])
 
     if proc.returncode != 0:
-        log.warning("claude -p exited %d: %s", proc.returncode, stderr.decode().strip()[:200])
-        return "Sorry, something went wrong while generating a response."
+        err = stderr.decode().strip()[:300]
+        msg = f"Error (exit {proc.returncode}): {err}" if err else "Sorry, something went wrong while generating a response."
+        return msg, session_id
+
+    # If this was the first message, detect the session ID so we can resume
+    if not session_id:
+        session_id = _find_latest_session()
+        log.info("Auto-detected session: %s", session_id)
 
     response = stdout.decode().strip()
     if len(response) > MAX_RESPONSE_LEN:
         response = response[:MAX_RESPONSE_LEN - 20] + "\n\n[...truncated]"
-    return response or "(empty response)"
+    return response or "(empty response)", session_id
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +229,7 @@ class SignalBot:
                 break
             text = line.decode().strip()
             if text:
-                log.debug("[%s] signal-cli stderr: %s", self.name, text)
+                log.info("[%s] signal-cli stderr: %s", self.name, text)
 
     async def _read_stdout(self):
         """Read JSON-RPC messages from signal-cli stdout."""
@@ -330,7 +364,10 @@ class SignalBot:
             response = "Session cleared. Back to stateless mode."
 
         else:
-            response = await ask_claude(text, session_id=self.active_session_id)
+            response, new_session_id = await ask_claude(text, session_id=self.active_session_id)
+            if new_session_id and not self.active_session_id:
+                self.active_session_id = new_session_id
+                log.info("[%s] Auto-resuming session %s", self.name, new_session_id)
 
         log.info("[%s] Response (%d chars): %s", self.name, len(response), response[:80])
         await self.send_message(response, recipient=reply_to)
