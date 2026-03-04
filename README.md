@@ -12,9 +12,12 @@ A bot that listens for messages in a Signal group and responds using Claude Code
 
 ```bash
 python3 ~/Code/SignalClaudeBot/bot.py
+python3 ~/Code/SignalClaudeBot/bot.py --yolo  # skip all Claude permission checks
 ```
 
 Send a message to the "Claude messages" Signal group and the bot will reply with Claude's response.
+
+The `--yolo` flag passes `--dangerously-skip-permissions` to Claude, allowing it to run any tool (Bash, file writes, etc.) without approval. Without it, permissions are controlled by `.claude/settings.json`.
 
 ## Configuration
 

@@ -18,6 +18,7 @@ import sys
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bots.json")
 CLAUDE_TIMEOUT = 120  # seconds to wait for claude -p
 MAX_RESPONSE_LEN = 6000  # Signal message size limit
+YOLO = "--yolo" in sys.argv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -138,7 +139,10 @@ async def ask_claude(prompt, session_id=None):
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
-    cmd = ["claude", "-p", prompt]
+    cmd = ["claude", "-p"]
+    if YOLO:
+        cmd.append("--dangerously-skip-permissions")
+    cmd.append(prompt)
     if session_id:
         cmd.extend(["--resume", session_id])
 
