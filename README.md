@@ -21,6 +21,25 @@ The `--yolo` flag passes `--dangerously-skip-permissions` to Claude, allowing it
 
 ## Configuration
 
+### Bot configuration
+
+Copy the example file and fill in your bot details:
+
+```bash
+cp bots.example.json bots.json
+```
+
+Each bot entry has the following fields:
+
+| Field | Description |
+|---|---|
+| `name` | Display name for the bot |
+| `account` | Signal account phone number |
+| `group_id` | Base64 group ID for the target Signal group |
+| `device_id` | Signal device ID (usually `1`) |
+
+### Other settings
+
 Edit the constants at the top of `bot.py`:
 
 | Variable | Description |
